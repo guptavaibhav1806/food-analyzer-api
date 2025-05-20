@@ -1,0 +1,69 @@
+from flask import Flask, request, jsonify
+from PIL import Image
+import google.generativeai as genai
+import tempfile
+import os
+import json
+
+# Initialize Flask app
+app = Flask(__name__)
+
+# ✅ Configure Gemini API key
+genai.configure(api_key=os.environ["GENAI_API_KEY"])
+
+
+# ✅ Load the Gemini model
+model = genai.GenerativeModel("models/gemini-1.5-flash")
+
+# ✅ Define prompt
+PROMPT = """
+You are an AI assistant that extracts structured food product data from packaging images.
+
+Please extract:
+1. A list of ingredients.
+2. Nutrition facts (key: value, with units).
+
+Return the result in JSON format like this:
+{
+  "ingredients": [ ... ],
+  "nutrition_facts": {
+    "Calories": "...",
+    "Total Fat": "...",
+    ...
+  }
+}
+"""
+
+
+# ✅ Create API route
+@app.route('/analyze', methods=['POST'])
+def analyze_image():
+    if 'image' not in request.files:
+        return jsonify({"error": "No image uploaded"}), 400
+
+    image_file = request.files['image']
+
+    # Save image to temp location
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        image_path = tmp.name
+        image_file.save(image_path)
+
+    try:
+        # Load image and run Gemini
+        image = Image.open(image_path)
+        response = model.generate_content([PROMPT, image])
+
+        # Try to parse JSON from Gemini output
+        try:
+            result = json.loads(response.text)
+            return jsonify(result)
+        except json.JSONDecodeError:
+            return jsonify({"error": "Gemini output not JSON", "raw_response": response.text}), 500
+
+    finally:
+        os.remove(image_path)
+
+
+# ✅ Run app
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
