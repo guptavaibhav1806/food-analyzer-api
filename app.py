@@ -40,16 +40,15 @@ def analyze_image():
 
     image_file = request.files['image']
 
-    # ✅ Handle user profile input (optional)
+    # Optional profile handling
     profile_data = request.form.get("profile")
-    profile = None
+    user_profile = None
     if profile_data:
         try:
-            profile = json.loads(profile_data)
-        except json.JSONDecodeError as e:
-            return jsonify({"error": "Invalid JSON in profile", "details": str(e)}), 400
+            user_profile = json.loads(profile_data)
+        except json.JSONDecodeError:
+            return jsonify({"error": "Invalid JSON in profile"}), 400
 
-    # ✅ Save image temporarily
     with tempfile.NamedTemporaryFile(delete=False) as tmp:
         image_path = tmp.name
         image_file.save(image_path)
@@ -57,20 +56,23 @@ def analyze_image():
     try:
         image = Image.open(image_path)
         response = model.generate_content([PROMPT, image])
-
+        
+        # Clean Gemini output (remove ```json ... ```)
+        clean_text = response.text.strip().strip("```json").strip("```").strip()
+        
         try:
-            result = json.loads(response.text)
+            extracted = json.loads(clean_text)
         except json.JSONDecodeError:
             return jsonify({"error": "Gemini output not JSON", "raw_response": response.text}), 500
 
-        # ✅ Include user profile in the response
         return jsonify({
-            "profile": profile,
-            "analysis": result
+            "profile": user_profile,
+            "analysis": extracted
         })
 
     finally:
         os.remove(image_path)
+
 
 # ✅ Run server
 if __name__ == '__main__':
