@@ -39,7 +39,17 @@ def analyze_image():
         return jsonify({"error": "No image uploaded"}), 400
 
     image_file = request.files['image']
-    
+
+    # ✅ Handle user profile input (optional)
+    profile_data = request.form.get("profile")
+    profile = None
+    if profile_data:
+        try:
+            profile = json.loads(profile_data)
+        except json.JSONDecodeError as e:
+            return jsonify({"error": "Invalid JSON in profile", "details": str(e)}), 400
+
+    # ✅ Save image temporarily
     with tempfile.NamedTemporaryFile(delete=False) as tmp:
         image_path = tmp.name
         image_file.save(image_path)
@@ -47,11 +57,18 @@ def analyze_image():
     try:
         image = Image.open(image_path)
         response = model.generate_content([PROMPT, image])
+
         try:
             result = json.loads(response.text)
-            return jsonify(result)
         except json.JSONDecodeError:
             return jsonify({"error": "Gemini output not JSON", "raw_response": response.text}), 500
+
+        # ✅ Include user profile in the response
+        return jsonify({
+            "profile": profile,
+            "analysis": result
+        })
+
     finally:
         os.remove(image_path)
 
