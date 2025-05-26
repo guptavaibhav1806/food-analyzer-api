@@ -33,7 +33,7 @@ Return the result in JSON format like this:
 
 # ✅ Initialize Flask app
 app = Flask(__name__)
-CORS(app)  # 🔥 Allows cross-origin requests from any frontend
+CORS(app, supports_credentials=True, origins="*") # 🔥 Allows cross-origin requests from any frontend
 
 @app.route('/analyze', methods=['POST'])
 def analyze_image():
