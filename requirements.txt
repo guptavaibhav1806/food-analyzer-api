@@ -1,6 +1,8 @@
 flask
 flask-cors
 pillow
-google-generativeai
 pandas
 joblib
+scikit-learn
+google-generativeai
+xgboost
