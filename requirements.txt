@@ -6,3 +6,5 @@ joblib
 scikit-learn
 google-generativeai
 xgboost
+numpy
+shap
