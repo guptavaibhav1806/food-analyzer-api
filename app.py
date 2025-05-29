@@ -8,14 +8,10 @@ import json
 import pandas as pd
 import joblib
 
-# ✅ Use your Gemini API key from environment variable
 genai.configure(api_key=os.environ["GENAI_API_KEY"])
-
-# ✅ Load the trained model pipeline
 model_path = "food_consumption_model_xgb.pkl"
 xgb_pipeline = joblib.load(model_path)
 
-# ✅ Prompt for Gemini
 PROMPT = """
 You are an AI assistant that extracts structured food product data from packaging images.
 
@@ -34,7 +30,6 @@ Return the result in JSON format like this:
 }
 """
 
-# ✅ Initialize Flask app
 app = Flask(__name__)
 CORS(app, supports_credentials=True, origins="*")
 
@@ -55,16 +50,13 @@ def analyze_image():
         except json.JSONDecodeError:
             return jsonify({"error": "Invalid JSON in profile"}), 400
 
-    # Save the image temporarily
     with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
         image_path = tmp.name
         image_file.save(image_path)
 
     try:
-        # ✅ Send image to Gemini
         image = Image.open(image_path)
         response = genai.GenerativeModel("models/gemini-1.5-flash").generate_content([PROMPT, image])
-
         clean_text = response.text.strip().strip("```json").strip("```").strip()
 
         try:
@@ -75,7 +67,6 @@ def analyze_image():
                 "raw_response": response.text
             }), 500
 
-        # ✅ Default profile if none
         if not user_profile:
             user_profile = {
                 "allergies": "none",
@@ -83,12 +74,17 @@ def analyze_image():
                 "conditions": "none"
             }
 
-        # ✅ Build input data
+        # ✅ Ensure scalar values, not lists
+        def flatten(value):
+            if isinstance(value, list):
+                return ', '.join(map(str, value))
+            return value
+
         input_data = {
-            "allergies": user_profile.get("allergies", "none"),
-            "diet": user_profile.get("diet", "none"),
-            "conditions": user_profile.get("conditions", "none"),
-            "ingredients": ','.join(extracted.get("ingredients", []))
+            "allergies": flatten(user_profile.get("allergies", "none")),
+            "diet": flatten(user_profile.get("diet", "none")),
+            "conditions": flatten(user_profile.get("conditions", "none")),
+            "ingredients": flatten(extracted.get("ingredients", []))
         }
 
         # ✅ Parse numerical nutrition facts
@@ -99,11 +95,16 @@ def analyze_image():
             try:
                 input_data[col] = float(val.split()[0]) if isinstance(val, str) else float(val)
             except Exception:
-                input_data[col] = 0.0  # fallback if parsing fails
+                input_data[col] = 0.0
 
         df_input = pd.DataFrame([input_data])
 
-        # ✅ Run prediction using pipeline (which includes preprocessing)
+        # ✅ DEBUG: check for bad types
+        for col in df_input.columns:
+            if isinstance(df_input[col].iloc[0], list):
+                df_input[col] = df_input[col].apply(flatten)
+
+        # ✅ Predict
         prediction = xgb_pipeline.predict(df_input)[0]
         prediction_str = "Yes" if prediction == "Yes" else "No"
 
@@ -116,7 +117,5 @@ def analyze_image():
     finally:
         os.remove(image_path)
 
-
-# ✅ Dev server (use Gunicorn in production)
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
