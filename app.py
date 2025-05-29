@@ -7,11 +7,17 @@ import os
 import json
 import pandas as pd
 import joblib
+import shap
+import numpy as np
 
+# Configure Gemini
 genai.configure(api_key=os.environ["GENAI_API_KEY"])
+
+# Load model pipeline
 model_path = "food_consumption_model_xgb.pkl"
 xgb_pipeline = joblib.load(model_path)
 
+# Prompt for Gemini
 PROMPT = """
 You are an AI assistant that extracts structured food product data from packaging images.
 
@@ -30,6 +36,7 @@ Return the result in JSON format like this:
 }
 """
 
+# Flask setup
 app = Flask(__name__)
 CORS(app, supports_credentials=True, origins="*")
 
@@ -41,8 +48,8 @@ def analyze_image():
         return jsonify({"error": "No image uploaded"}), 400
 
     image_file = request.files['image']
-
     profile_data = request.form.get("profile")
+
     user_profile = None
     if profile_data:
         try:
@@ -55,6 +62,7 @@ def analyze_image():
         image_file.save(image_path)
 
     try:
+        # Step 1: Extract text from image via Gemini
         image = Image.open(image_path)
         response = genai.GenerativeModel("models/gemini-1.5-flash").generate_content([PROMPT, image])
         clean_text = response.text.strip().strip("```json").strip("```").strip()
@@ -74,12 +82,13 @@ def analyze_image():
                 "conditions": "none"
             }
 
-        # ✅ Ensure scalar values, not lists
+        # Flatten helper
         def flatten(value):
             if isinstance(value, list):
                 return ', '.join(map(str, value))
             return value
 
+        # Prepare input data
         input_data = {
             "allergies": flatten(user_profile.get("allergies", "none")),
             "diet": flatten(user_profile.get("diet", "none")),
@@ -87,7 +96,6 @@ def analyze_image():
             "ingredients": flatten(extracted.get("ingredients", []))
         }
 
-        # ✅ Parse numerical nutrition facts
         nutrition = extracted.get("nutrition_facts", {})
         for col in ['Calories', 'Total Fat', 'Saturated Fat', 'Sodium',
                     'Total Carbohydrate', 'Sugar', 'Protein']:
@@ -99,23 +107,48 @@ def analyze_image():
 
         df_input = pd.DataFrame([input_data])
 
-        # ✅ DEBUG: check for bad types
+        # Fix list columns
         for col in df_input.columns:
             if isinstance(df_input[col].iloc[0], list):
                 df_input[col] = df_input[col].apply(flatten)
 
-        # ✅ Predict
+        # Predict
         prediction = xgb_pipeline.predict(df_input)[0]
         prediction_str = "Yes" if prediction == "Yes" else "No"
+
+        # SHAP explanation
+        model = xgb_pipeline.named_steps["model"]
+        preprocessor = xgb_pipeline.named_steps["preprocessor"]
+        X_transformed = preprocessor.transform(df_input)
+
+        explainer = shap.Explainer(model)
+        shap_values = explainer(X_transformed)
+
+        try:
+            feature_names = preprocessor.get_feature_names_out()
+        except AttributeError:
+            feature_names = [f"feature_{i}" for i in range(X_transformed.shape[1])]
+
+        contributions = shap_values.values[0]
+        feature_contributions = list(zip(feature_names, contributions))
+        feature_contributions.sort(key=lambda x: abs(x[1]), reverse=True)
+
+        explanations = []
+        for feature, value in feature_contributions[:8]:
+            direction = "🔴" if value < -0.01 else "🟢" if value > 0.01 else "🟡"
+            explanation = f"{direction} {feature} → {'Negative' if value < -0.01 else 'Positive' if value > 0.01 else 'Neutral'}"
+            explanations.append(explanation)
 
         return jsonify({
             "profile": user_profile,
             "analysis": extracted,
-            "should_consume": prediction_str
+            "should_consume": prediction_str,
+            "explanation": explanations
         })
 
     finally:
         os.remove(image_path)
 
+# Run server
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
