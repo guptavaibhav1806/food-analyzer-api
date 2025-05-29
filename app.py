@@ -117,7 +117,7 @@ def analyze_image():
         prediction_str = "Yes" if prediction == "Yes" else "No"
 
         # SHAP explanation
-        model = xgb_pipeline.named_steps["model"]
+        model = xgb_pipeline.named_steps["classifier"]
         preprocessor = xgb_pipeline.named_steps["preprocessor"]
         X_transformed = preprocessor.transform(df_input)
 
