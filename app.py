@@ -9,6 +9,9 @@ import pandas as pd
 import joblib
 import shap
 import numpy as np
+import requests
+import cv2
+from pyzbar.pyzbar import decode
 
 # Configure Gemini
 genai.configure(api_key=os.environ["GENAI_API_KEY"])
@@ -40,6 +43,61 @@ Return the result in JSON format like this:
 app = Flask(__name__)
 CORS(app, supports_credentials=True, origins="*")
 
+def flatten(value):
+    if isinstance(value, list):
+        return ', '.join(map(str, value))
+    return value
+
+def query_openfoodfacts(barcode):
+    url = f"https://world.openfoodfacts.org/api/v0/product/{barcode}.json"
+    response = requests.get(url)
+    if response.status_code == 200:
+        data = response.json()
+        if data.get("status") == 1:
+            product = data["product"]
+            return {
+                "ingredients": product.get("ingredients_text", "").split(", "),
+                "allergens": product.get("allergens_tags", []),
+                "nutrition_facts": product.get("nutriments", {})
+            }
+    return None
+
+def extract_barcode_from_image(image_path):
+    image = cv2.imread(image_path)
+    if image is None:
+        return None
+    barcodes = decode(image)
+    if barcodes:
+        return barcodes[0].data.decode('utf-8')
+    return None
+
+def custom_nutriscore(user_profile, ingredients, allergens):
+    score = 100  # Start from full score
+    deductions = []
+
+    # Allergen-based deduction
+    user_allergens = [a.lower().strip() for a in user_profile.get("allergies", "").split(",") if a != 'none']
+    product_allergens = [a.split(":")[-1].replace("_", " ").lower().strip() for a in allergens]
+    for allergen in user_allergens:
+        if allergen in product_allergens:
+            score -= 30
+            deductions.append(f"❌ Allergen conflict: {allergen}")
+
+    # Vegan diet check
+    if user_profile.get("diet", "").lower().strip() == "vegan":
+        animal_keywords = [
+            "milk", "egg", "honey", "gelatin", "beef", "chicken", "fish", "meat",
+            "lard", "casein", "lactose", "whey", "shellfish", "anchovy", "animal"
+        ]
+        for ingredient in ingredients:
+            for keyword in animal_keywords:
+                if keyword in ingredient.lower():
+                    score -= 20
+                    deductions.append(f"🐄 Animal-based ingredient found: {ingredient}")
+                    break
+
+    return max(score, 0), deductions
+
 @app.route('/analyze', methods=['POST'])
 def analyze_image():
     print("✅ /analyze request received")
@@ -49,8 +107,14 @@ def analyze_image():
 
     image_file = request.files['image']
     profile_data = request.form.get("profile")
+    barcode = request.form.get("barcode", "").strip()
 
-    user_profile = None
+    user_profile = {
+        "allergies": "none",
+        "diet": "none",
+        "conditions": "none"
+    }
+
     if profile_data:
         try:
             user_profile = json.loads(profile_data)
@@ -62,33 +126,41 @@ def analyze_image():
         image_file.save(image_path)
 
     try:
-        # Step 1: Extract text from image via Gemini
-        image = Image.open(image_path)
-        response = genai.GenerativeModel("models/gemini-1.5-flash").generate_content([PROMPT, image])
-        clean_text = response.text.strip().strip("```json").strip("```").strip()
+        if not barcode:
+            barcode = extract_barcode_from_image(image_path)
+            if barcode:
+                print(f"🔍 Extracted barcode: {barcode}")
 
-        try:
-            extracted = json.loads(clean_text)
-        except json.JSONDecodeError:
-            return jsonify({
-                "error": "Gemini output not JSON parseable",
-                "raw_response": response.text
-            }), 500
+        extracted = None
+        if barcode:
+            off_data = query_openfoodfacts(barcode)
+            if off_data:
+                extracted = {
+                    "ingredients": off_data["ingredients"],
+                    "nutrition_facts": {
+                        "Calories": off_data["nutrition_facts"].get("energy-kcal_100g", 0),
+                        "Total Fat": off_data["nutrition_facts"].get("fat_100g", 0),
+                        "Saturated Fat": off_data["nutrition_facts"].get("saturated-fat_100g", 0),
+                        "Sodium": off_data["nutrition_facts"].get("sodium_100g", 0),
+                        "Total Carbohydrate": off_data["nutrition_facts"].get("carbohydrates_100g", 0),
+                        "Sugar": off_data["nutrition_facts"].get("sugars_100g", 0),
+                        "Protein": off_data["nutrition_facts"].get("proteins_100g", 0)
+                    },
+                    "allergens": off_data["allergens"]
+                }
 
-        if not user_profile:
-            user_profile = {
-                "allergies": "none",
-                "diet": "none",
-                "conditions": "none"
-            }
+        if not extracted:
+            image = Image.open(image_path)
+            response = genai.GenerativeModel("models/gemini-1.5-flash").generate_content([PROMPT, image])
+            clean_text = response.text.strip().strip("```json").strip("```").strip()
 
-        # Flatten helper
-        def flatten(value):
-            if isinstance(value, list):
-                return ', '.join(map(str, value))
-            return value
+            try:
+                extracted = json.loads(clean_text)
+                extracted["allergens"] = []  # No allergen info from Gemini
+            except json.JSONDecodeError:
+                return jsonify({"error": "Gemini output not JSON parseable", "raw_response": response.text}), 500
 
-        # Prepare input data
+        # Prepare input for ML model
         input_data = {
             "allergies": flatten(user_profile.get("allergies", "none")),
             "diet": flatten(user_profile.get("diet", "none")),
@@ -106,17 +178,13 @@ def analyze_image():
                 input_data[col] = 0.0
 
         df_input = pd.DataFrame([input_data])
-
-        # Fix list columns
         for col in df_input.columns:
             if isinstance(df_input[col].iloc[0], list):
                 df_input[col] = df_input[col].apply(flatten)
 
-        # Predict
         prediction = xgb_pipeline.predict(df_input)[0]
         prediction_str = "Yes" if prediction == "Yes" else "No"
 
-        # SHAP explanation
         model = xgb_pipeline.named_steps["classifier"]
         preprocessor = xgb_pipeline.named_steps["preprocessor"]
         X_transformed = preprocessor.transform(df_input)
@@ -139,16 +207,20 @@ def analyze_image():
             explanation = f"{direction} {feature} → {'Negative' if value < -0.01 else 'Positive' if value > 0.01 else 'Neutral'}"
             explanations.append(explanation)
 
+        nutriscore, deduction_reasons = custom_nutriscore(user_profile, extracted.get("ingredients", []), extracted.get("allergens", []))
+
         return jsonify({
             "profile": user_profile,
+            "source": "OpenFoodFacts" if barcode else "Gemini",
             "analysis": extracted,
             "should_consume": prediction_str,
-            "explanation": explanations
+            "ml_explanation": explanations,
+            "custom_nutriscore": nutriscore,
+            "deductions": deduction_reasons
         })
 
     finally:
         os.remove(image_path)
 
-# Run server
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
