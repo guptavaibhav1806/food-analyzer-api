@@ -1,11 +1,11 @@
-flask
+Flask
 flask-cors
 Pillow
 google-generativeai
-opencv-python
-requests
-joblib
 pandas
 numpy
 scikit-learn==1.6.1
+xgboost
+joblib
 shap
+requests
