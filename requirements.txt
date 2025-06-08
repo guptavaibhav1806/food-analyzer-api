@@ -3,7 +3,6 @@ flask-cors
 Pillow
 google-generativeai
 opencv-python
-pyzbar
 requests
 joblib
 pandas
