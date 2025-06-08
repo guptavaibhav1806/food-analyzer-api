@@ -1,10 +1,12 @@
 flask
 flask-cors
-pillow
-pandas
-joblib
-scikit-learn
+Pillow
 google-generativeai
-xgboost
+opencv-python
+pyzbar
+requests
+joblib
+pandas
 numpy
+scikit-learn
 shap
