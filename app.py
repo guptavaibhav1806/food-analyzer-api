@@ -59,6 +59,18 @@ def query_openfoodfacts(barcode):
             }
     return None
 
+def map_score_to_letter(score):
+    if score >= 80:
+        return "A"
+    elif score >= 60:
+        return "B"
+    elif score >= 40:
+        return "C"
+    elif score >= 20:
+        return "D"
+    else:
+        return "E"
+
 @app.route('/analyze', methods=['POST'])
 def analyze_image():
     print("✅ /analyze request received")
@@ -96,6 +108,7 @@ def analyze_image():
 
                 # Allergen conflict check
                 if any(allergen in product_allergens for allergen in user_allergies if allergen != 'none'):
+                    nutriscore = 30  # penalty for allergens
                     return jsonify({
                         "profile": user_profile,
                         "source": "OpenFoodFacts",
@@ -105,6 +118,10 @@ def analyze_image():
                             "allergens": product_allergens
                         },
                         "should_consume": "No",
+                        "nutriscore": {
+                            "score": nutriscore,
+                            "grade": map_score_to_letter(nutriscore)
+                        },
                         "reason": "Allergen conflict detected from OpenFoodFacts"
                     })
 
@@ -121,7 +138,6 @@ def analyze_image():
                     }
                 }
 
-        # Use Gemini if barcode failed or was not found
         if not extracted:
             image = Image.open(image_path)
             response = genai.GenerativeModel("models/gemini-1.5-flash").generate_content([PROMPT, image])
@@ -159,6 +175,19 @@ def analyze_image():
         prediction = xgb_pipeline.predict(df_input)[0]
         prediction_str = "Yes" if prediction == "Yes" else "No"
 
+        # Compute NutriScore
+        nutriscore = 100
+        if user_profile.get("diet", "").lower() == "vegan":
+            ingredients = [i.lower() for i in extracted.get("ingredients", [])]
+            if any(word in i for i in ingredients for word in ["milk", "egg", "honey", "gelatin", "meat", "fish"]):
+                nutriscore -= 30
+
+        if user_profile.get("allergies", "none").lower() != "none":
+            allergens = [a.lower().strip() for a in user_profile.get("allergies").split(",")]
+            ingredients = [i.lower() for i in extracted.get("ingredients", [])]
+            if any(a in i for a in allergens for i in ingredients):
+                nutriscore -= 30
+
         model = xgb_pipeline.named_steps["classifier"]
         preprocessor = xgb_pipeline.named_steps["preprocessor"]
         X_transformed = preprocessor.transform(df_input)
@@ -186,6 +215,10 @@ def analyze_image():
             "source": "OpenFoodFacts" if barcode else "Gemini",
             "analysis": extracted,
             "should_consume": prediction_str,
+            "nutriscore": {
+                "score": nutriscore,
+                "grade": map_score_to_letter(nutriscore)
+            },
             "explanation": explanations
         })
 
