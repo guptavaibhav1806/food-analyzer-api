@@ -9,4 +9,4 @@ xgboost
 joblib
 shap
 requests
-pynutriscore
+pyNutriScore
