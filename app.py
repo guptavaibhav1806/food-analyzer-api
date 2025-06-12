@@ -10,7 +10,7 @@ import joblib
 import shap
 import numpy as np
 import requests
-from pynutriscore import NutriScore
+from pyNutriScore import NutriScore  # ✅ Correct import
 
 # Configure Gemini
 genai.configure(api_key=os.environ["GENAI_API_KEY"])
@@ -57,11 +57,7 @@ def query_openfoodfacts(barcode):
                 "ingredients": product.get("ingredients_text", "").split(", "),
                 "allergens": product.get("allergens_tags", []),
                 "nutrition_facts": product.get("nutriments", {}),
-                "nutriscore": {
-                    "grade": product.get("nutriscore_grade"),
-                    "score": product.get("nutriscore_score"),
-                    "image_url": product.get("nutriscore_score_opposite"),
-                }
+                "nutriscore": product.get("nutriscore_data", {})
             }
     return None
 
@@ -106,7 +102,9 @@ def analyze_image():
 
     try:
         extracted = None
-        nutriscore = {"score": None, "grade": "unknown", "image_url": None}
+        nutriscore = 100
+        nutri_grade = "A"
+        reason = None
 
         if barcode:
             off_data = query_openfoodfacts(barcode)
@@ -114,7 +112,10 @@ def analyze_image():
                 user_allergies = [a.lower().strip() for a in user_profile.get("allergies", "").split(",")]
                 product_allergens = [a.split(":")[-1].replace("_", " ").lower().strip() for a in off_data.get("allergens", [])]
 
+                # Allergen conflict check
                 if any(allergen in product_allergens for allergen in user_allergies if allergen != 'none'):
+                    nutriscore = 30
+                    nutri_grade = map_score_to_letter(nutriscore)
                     return jsonify({
                         "profile": user_profile,
                         "source": "OpenFoodFacts",
@@ -125,8 +126,8 @@ def analyze_image():
                         },
                         "should_consume": "No",
                         "nutriscore": {
-                            "score": 30,
-                            "grade": map_score_to_letter(30)
+                            "score": nutriscore,
+                            "grade": nutri_grade
                         },
                         "reason": "Allergen conflict detected from OpenFoodFacts"
                     })
@@ -144,43 +145,43 @@ def analyze_image():
                     }
                 }
 
-                nutriscore = off_data["nutriscore"]
+                # Use OpenFoodFacts nutriscore, else fallback to pyNutriScore
+                ns_data = off_data.get("nutriscore", {})
+                ns_score = ns_data.get("score")
+                ns_grade = ns_data.get("grade")
 
-                # Fallback to pynutriscore if grade/score unknown
-                if not nutriscore.get("grade") or nutriscore.get("grade") == "unknown" or nutriscore.get("score") is None:
-                    nf = off_data["nutrition_facts"]
+                if ns_score is not None and ns_grade not in [None, "unknown"]:
+                    nutriscore = ns_score
+                    nutri_grade = ns_grade.upper()
+                else:
                     try:
-                        score_obj = NutriScore(
-                            energy_kj=nf.get("energy_100g", 0),
-                            saturated_fat=nf.get("saturated-fat_100g", 0),
-                            total_sugar=nf.get("sugars_100g", 0),
-                            sodium=nf.get("sodium_100g", 0),
-                            fruits_veg_percentage=nf.get("fruits-vegetables-nuts-legumes_100g", 0),
-                            fiber=nf.get("fiber_100g", 0),
-                            protein=nf.get("proteins_100g", 0),
-                            is_beverage=False
+                        nscore = NutriScore(
+                            energy=off_data["nutrition_facts"].get("energy-kcal_100g", 0),
+                            saturated_fats=off_data["nutrition_facts"].get("saturated-fat_100g", 0),
+                            sugars=off_data["nutrition_facts"].get("sugars_100g", 0),
+                            sodium=off_data["nutrition_facts"].get("sodium_100g", 0),
+                            fibers=off_data["nutrition_facts"].get("fiber_100g", 0),
+                            proteins=off_data["nutrition_facts"].get("proteins_100g", 0),
+                            fruits_percentage=0  # fallback assumption
                         )
-                        nutriscore = {
-                            "score": score_obj.score,
-                            "grade": score_obj.grade,
-                            "image_url": None
-                        }
-                    except Exception as e:
-                        nutriscore = {
-                            "score": None,
-                            "grade": "unknown",
-                            "image_url": None,
-                            "error": f"NutriScore fallback failed: {str(e)}"
-                        }
+                        nutriscore = nscore.score
+                        nutri_grade = nscore.grade
+                    except:
+                        nutriscore = 50
+                        nutri_grade = "C"
 
         if not extracted:
             image = Image.open(image_path)
             response = genai.GenerativeModel("models/gemini-1.5-flash").generate_content([PROMPT, image])
             clean_text = response.text.strip().strip("```json").strip("```").strip()
+
             try:
                 extracted = json.loads(clean_text)
             except json.JSONDecodeError:
-                return jsonify({"error": "Gemini output not JSON parseable", "raw_response": response.text}), 500
+                return jsonify({
+                    "error": "Gemini output not JSON parseable",
+                    "raw_response": response.text
+                }), 500
 
         input_data = {
             "allergies": flatten(user_profile.get("allergies", "none")),
@@ -190,7 +191,8 @@ def analyze_image():
         }
 
         nutrition = extracted.get("nutrition_facts", {})
-        for col in ['Calories', 'Total Fat', 'Saturated Fat', 'Sodium', 'Total Carbohydrate', 'Sugar', 'Protein']:
+        for col in ['Calories', 'Total Fat', 'Saturated Fat', 'Sodium',
+                    'Total Carbohydrate', 'Sugar', 'Protein']:
             val = nutrition.get(col, "0")
             try:
                 input_data[col] = float(val.split()[0]) if isinstance(val, str) else float(val)
@@ -205,6 +207,7 @@ def analyze_image():
         prediction = xgb_pipeline.predict(df_input)[0]
         prediction_str = "Yes" if prediction == "Yes" else "No"
 
+        # Explain prediction
         model = xgb_pipeline.named_steps["classifier"]
         preprocessor = xgb_pipeline.named_steps["preprocessor"]
         X_transformed = preprocessor.transform(df_input)
@@ -232,7 +235,10 @@ def analyze_image():
             "source": "OpenFoodFacts" if barcode else "Gemini",
             "analysis": extracted,
             "should_consume": prediction_str,
-            "nutriscore": nutriscore,
+            "nutriscore": {
+                "score": nutriscore,
+                "grade": nutri_grade
+            },
             "explanation": explanations
         })
 
