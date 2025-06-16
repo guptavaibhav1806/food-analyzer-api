@@ -21,11 +21,9 @@ xgb_pipeline = joblib.load(model_path)
 
 PROMPT = """
 You are an AI assistant that extracts structured food product data from packaging images.
-
 Please extract:
 1. A list of ingredients.
 2. Nutrition facts (key: value, with units).
-
 Return the result in JSON format like this:
 {
   "ingredients": [ ... ],
@@ -42,8 +40,8 @@ CORS(app, supports_credentials=True, origins="*")
 
 def flatten(value):
     if isinstance(value, list):
-        return ', '.join(map(str, value))
-    return value
+        return ', '.join(str(v).strip() for v in value)
+    return str(value).strip()
 
 def query_openfoodfacts(barcode):
     url = f"https://world.openfoodfacts.org/api/v0/product/{barcode}.json"
@@ -97,14 +95,17 @@ def analyze_image():
     barcode = request.form.get("barcode", "").strip()
 
     user_profile = {
-        "allergies": "none",
+        "allergies": [],
         "diet": "none",
-        "conditions": "none"
+        "conditions": []
     }
 
     if profile_data:
         try:
-            user_profile = json.loads(profile_data)
+            profile_json = json.loads(profile_data)
+            user_profile["allergies"] = profile_json.get("allergies", [])
+            user_profile["diet"] = profile_json.get("diet", "none")
+            user_profile["conditions"] = profile_json.get("conditions", [])
         except json.JSONDecodeError:
             return jsonify({"error": "Invalid JSON in profile"}), 400
 
@@ -120,10 +121,10 @@ def analyze_image():
         if barcode:
             off_data = query_openfoodfacts(barcode)
             if off_data:
-                user_allergies = [a.lower().strip() for a in user_profile.get("allergies", "").split(",")]
+                user_allergies = [a.lower().strip() for a in user_profile.get("allergies", [])]
                 product_allergens = [a.split(":")[-1].replace("_", " ").lower().strip() for a in off_data.get("allergens", [])]
 
-                if any(allergen in product_allergens for allergen in user_allergies if allergen != 'none'):
+                if any(allergen in product_allergens for allergen in user_allergies):
                     return jsonify({
                         "profile": user_profile,
                         "source": "OpenFoodFacts",
@@ -173,22 +174,21 @@ def analyze_image():
 
         if nutriscore_score is None or nutriscore_grade is None:
             nutriscore_score = 100
+            ingredients = [i.lower() for i in extracted.get("ingredients", [])]
             if user_profile.get("diet", "").lower() == "vegan":
-                ingredients = [i.lower() for i in extracted.get("ingredients", [])]
-                if any(word in i for i in ingredients for word in ["milk", "egg", "honey", "gelatin", "meat", "fish"]):
+                if any(word in ing for ing in ingredients for word in ["milk", "egg", "honey", "gelatin", "meat", "fish"]):
                     nutriscore_score -= 30
-            if user_profile.get("allergies", "none").lower() != "none":
-                allergens = [a.lower().strip() for a in user_profile.get("allergies").split(",")]
-                ingredients = [i.lower() for i in extracted.get("ingredients", [])]
-                if any(a in i for a in allergens for i in ingredients):
-                    nutriscore_score -= 30
+            user_allergies = [a.lower().strip() for a in user_profile.get("allergies", [])]
+            if any(a in ing for a in user_allergies for ing in ingredients):
+                nutriscore_score -= 30
+
             nutriscore_grade = "A" if nutriscore_score >= 80 else "B" if nutriscore_score >= 60 else "C" if nutriscore_score >= 40 else "D" if nutriscore_score >= 20 else "E"
 
         return jsonify({
             "profile": user_profile,
             "source": "OpenFoodFacts" if barcode else "Gemini",
             "analysis": extracted,
-            "should_consume": "Yes",
+            "should_consume": "Yes" if nutriscore_score > 30 else "No",
             "nutriscore": {
                 "score": nutriscore_score,
                 "grade": nutriscore_grade
