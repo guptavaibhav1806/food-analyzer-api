@@ -87,10 +87,7 @@ def compute_pynutriscore(nutrition_facts):
 
 @app.route('/analyze', methods=['POST'])
 def analyze_image():
-    if 'image' not in request.files:
-        return jsonify({"error": "No image uploaded"}), 400
-
-    image_file = request.files['image']
+    image_file = request.files.get('image')
     profile_data = request.form.get("profile")
     barcode = request.form.get("barcode", "").strip()
 
@@ -109,9 +106,11 @@ def analyze_image():
         except json.JSONDecodeError:
             return jsonify({"error": "Invalid JSON in profile"}), 400
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-        image_path = tmp.name
-        image_file.save(image_path)
+    image_path = None
+    if image_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+            image_path = tmp.name
+            image_file.save(image_path)
 
     try:
         extracted = None
@@ -161,16 +160,21 @@ def analyze_image():
                     nutriscore_score, nutriscore_grade = compute_pynutriscore(off_data["nutrition_facts"])
 
         if not extracted:
-            image = Image.open(image_path)
-            response = genai.GenerativeModel("models/gemini-1.5-flash").generate_content([PROMPT, image])
-            clean_text = response.text.strip().strip("```json").strip("```").strip()
-            try:
-                extracted = json.loads(clean_text)
-            except json.JSONDecodeError:
+            if image_path:
+                image = Image.open(image_path)
+                response = genai.GenerativeModel("models/gemini-1.5-flash").generate_content([PROMPT, image])
+                clean_text = response.text.strip().strip("```json").strip("```").strip()
+                try:
+                    extracted = json.loads(clean_text)
+                except json.JSONDecodeError:
+                    return jsonify({
+                        "error": "Gemini output not JSON parseable",
+                        "raw_response": response.text
+                    }), 500
+            else:
                 return jsonify({
-                    "error": "Gemini output not JSON parseable",
-                    "raw_response": response.text
-                }), 500
+                    "error": "No image or valid barcode provided. Please upload an image or enter a barcode."
+                }), 400
 
         if nutriscore_score is None or nutriscore_grade is None:
             nutriscore_score = 100
@@ -195,7 +199,8 @@ def analyze_image():
             }
         })
     finally:
-        os.remove(image_path)
+        if image_path:
+            os.remove(image_path)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
