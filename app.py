@@ -7,8 +7,6 @@ import os
 import json
 import pandas as pd
 import joblib
-import shap
-import numpy as np
 import requests
 from pyNutriScore import NutriScore
 
@@ -38,10 +36,12 @@ Return the result in JSON format like this:
 app = Flask(__name__)
 CORS(app, supports_credentials=True, origins="*")
 
+
 def flatten(value):
     if isinstance(value, list):
         return ', '.join(str(v).strip() for v in value)
     return str(value).strip()
+
 
 def query_openfoodfacts(barcode):
     url = f"https://world.openfoodfacts.org/api/v0/product/{barcode}.json"
@@ -60,6 +60,7 @@ def query_openfoodfacts(barcode):
                 }
             }
     return None
+
 
 def compute_pynutriscore(nutrition_facts):
     try:
@@ -84,6 +85,7 @@ def compute_pynutriscore(nutrition_facts):
         return score, grade
     except Exception:
         return None, None
+
 
 @app.route('/analyze', methods=['POST'])
 def analyze_image():
@@ -201,6 +203,42 @@ def analyze_image():
     finally:
         if image_path:
             os.remove(image_path)
+
+
+@app.route('/chat', methods=['POST'])
+def chat():
+    data = request.get_json()
+    if not data or 'message' not in data:
+        return jsonify({"error": "No message provided"}), 400
+
+    message = data['message']
+    profile = data.get('profile', {
+        "diet": "none",
+        "allergies": [],
+        "conditions": []
+    })
+
+    chat_prompt = f"""
+    You are a friendly nutrition expert chatbot helping users make healthy food choices.
+
+    User profile:
+    - Diet: {profile.get('diet')}
+    - Allergies: {', '.join(profile.get('allergies', []))}
+    - Health Conditions: {', '.join(profile.get('conditions', []))}
+
+    User message: {message}
+
+    Respond clearly with personalized food advice or answers.
+    """
+
+    try:
+        response = genai.GenerativeModel("models/gemini-1.5-flash").generate_content(chat_prompt)
+        return jsonify({
+            "response": response.text.strip()
+        })
+    except Exception as e:
+        return jsonify({"error": "Gemini failed to respond", "details": str(e)}), 500
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
