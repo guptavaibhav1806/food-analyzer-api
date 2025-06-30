@@ -244,6 +244,13 @@ curl -X POST \
 ├── 🔐 .env                            # Local environment variables (not for git)
 └── 📖 README.md                       # This beautiful file
 ```
+## 🏗️ Architecture Diagram
 
----
+<div align="left">
+
+[🔗 **View Interactive Diagram on Eraser**](https://app.eraser.io/workspace/P1bgbCiXwaEkFF7eVeCL?elements=WeVAmTK_LBUv5rO7oVaP1g)
+
+*Click the link above to view and interact with the full architecture diagram*
+
+</div>
 
